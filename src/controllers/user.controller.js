@@ -10,8 +10,8 @@ import OrderHistory from "../models/orderhistory.model.js";
 // Note: dotenv should be loaded in index.js before this module is imported
 // This is just a safety fallback
 
-// Email transporter configuration using nodemailer service
-// Uses service-based configuration (Gmail, Outlook, etc.) instead of direct SMTP
+// Email transporter configuration for GoDaddy Titan Mail
+// Uses SMTP configuration optimized for GoDaddy's email servers
 const createTransporter = () => {
   // Use EMAIL_USER for auth (fallback to EMAIL_FROM if EMAIL_USER not set)
   let emailUser = process.env.EMAIL_USER || process.env.EMAIL_FROM;
@@ -26,7 +26,7 @@ const createTransporter = () => {
   }
 
   // Debug logging - show raw values
-  console.log("Email configuration check (raw):", {
+  console.log("GoDaddy Titan Mail configuration check (raw):", {
     EMAIL_USER: process.env.EMAIL_USER
       ? `"${process.env.EMAIL_USER}"`
       : "✗ Missing",
@@ -34,15 +34,15 @@ const createTransporter = () => {
       ? `"${process.env.EMAIL_FROM}"`
       : "✗ Missing",
     EMAIL_PASS: process.env.EMAIL_PASS ? "✓ Set (hidden)" : "✗ Missing",
-    EMAIL_SERVICE: process.env.EMAIL_SERVICE || "gmail (default)",
+    EMAIL_HOST: process.env.EMAIL_HOST || "smtpout.secureserver.net (default)",
+    EMAIL_PORT: process.env.EMAIL_PORT || "587 (default)",
   });
 
-  console.log("Email configuration check (processed):", {
+  console.log("GoDaddy Titan Mail configuration check (processed):", {
     emailUser: emailUser || "✗ Missing",
     emailPass: emailPass ? "✓ Set (hidden)" : "✗ Missing",
     emailHost: process.env.EMAIL_HOST || "smtpout.secureserver.net (default)",
     emailPort: process.env.EMAIL_PORT || "587 (default)",
-    emailService: process.env.EMAIL_SERVICE || "GoDaddy Titan Mail (default)",
   });
 
   // Important note for GoDaddy Titan Mail
@@ -60,10 +60,14 @@ const createTransporter = () => {
   }
 
   try {
+    // GoDaddy Titan Mail SMTP configuration
+    // Try multiple ports and hosts for better compatibility with Render free tier
     const emailPort = process.env.EMAIL_PORT ? parseInt(process.env.EMAIL_PORT) : 587;
-    // Try smtpout.secureserver.net first (more reliable), fallback to smtp.titan.email
+    // GoDaddy SMTP servers (try these in order if one fails)
     const emailHost = process.env.EMAIL_HOST || "smtpout.secureserver.net";
     const isSecure = emailPort === 465;
+
+    console.log(`📧 Configuring GoDaddy Titan Mail SMTP (${emailHost}:${emailPort})...`);
 
     const transporter = nodemailer.createTransport({
       host: emailHost,
@@ -75,30 +79,49 @@ const createTransporter = () => {
         pass: emailPass,
       },
       tls: {
-        // Do not fail on invalid certificates (some servers have self-signed certs)
+        // GoDaddy sometimes uses self-signed certificates
         rejectUnauthorized: false
       },
-      // Timeout configurations to prevent connection timeout errors
-      connectionTimeout: 60000, // 60 seconds - time to wait for initial connection
-      greetingTimeout: 30000, // 30 seconds - time to wait for SMTP greeting
-      socketTimeout: 60000, // 60 seconds - time to wait for socket inactivity
+      // Timeout configurations - increased for GoDaddy
+      connectionTimeout: 90000, // 90 seconds - GoDaddy can be slow
+      greetingTimeout: 30000, // 30 seconds
+      socketTimeout: 90000, // 90 seconds
       // Retry configuration
-      pool: true, // Use connection pooling
-      maxConnections: 1, // Maximum number of connections in the pool
-      maxMessages: 3, // Maximum number of messages per connection
-      rateDelta: 1000, // Time window for rate limiting
-      rateLimit: 5, // Maximum number of messages per rateDelta
-      debug: process.env.NODE_ENV === 'development', // Enable debug in development
-      logger: process.env.NODE_ENV === 'development' // Enable logging in development
+      pool: false, // Disable pooling for GoDaddy (can cause issues)
+      maxConnections: 1,
+      maxMessages: 1, // One message per connection for GoDaddy
+      rateDelta: 2000, // 2 second window
+      rateLimit: 3, // 3 messages per window
+      // GoDaddy-specific options
+      ignoreTLS: false,
+      debug: process.env.NODE_ENV === 'development',
+      logger: process.env.NODE_ENV === 'development'
     });
 
     // Verify connection on creation (but don't block - make it async)
     transporter.verify((error, success) => {
       if (error) {
-        console.error("Email transporter verification failed:", error.message);
+        console.error("GoDaddy Titan Mail verification failed:", error.message);
         console.error("Full error details:", error);
+        if (error.code === 'ETIMEDOUT' || error.code === 'ECONNREFUSED') {
+          console.error("\n⚠️  GoDaddy Titan Mail connection issues:");
+          console.error("   This is common on Render free tier due to firewall restrictions.");
+          console.error("   Try these GoDaddy SMTP alternatives:");
+          console.error("   1. smtpout.secureserver.net:587 (current)");
+          console.error("   2. smtp.titan.email:587");
+          console.error("   3. smtpout.secureserver.net:80");
+          console.error("   4. smtpout.secureserver.net:3535");
+          console.error("\n   Update environment variables:");
+          console.error("   EMAIL_HOST=smtp.titan.email (or other server)");
+          console.error("   EMAIL_PORT=587 (or 80, 3535, 465)");
+        } else if (error.code === 'EAUTH') {
+          console.error("\n⚠️  GoDaddy authentication failed:");
+          console.error("   - Verify EMAIL_USER is your full email (user@domain.com)");
+          console.error("   - Check EMAIL_PASS is correct");
+          console.error("   - Ensure email account is active in GoDaddy");
+        }
       } else {
-        console.log("✓ Email transporter is ready to send messages");
+        console.log("✓ GoDaddy Titan Mail transporter is ready to send messages");
       }
     });
 
