@@ -78,6 +78,16 @@ const createTransporter = () => {
         // Do not fail on invalid certificates (some servers have self-signed certs)
         rejectUnauthorized: false
       },
+      // Timeout configurations to prevent connection timeout errors
+      connectionTimeout: 60000, // 60 seconds - time to wait for initial connection
+      greetingTimeout: 30000, // 30 seconds - time to wait for SMTP greeting
+      socketTimeout: 60000, // 60 seconds - time to wait for socket inactivity
+      // Retry configuration
+      pool: true, // Use connection pooling
+      maxConnections: 1, // Maximum number of connections in the pool
+      maxMessages: 3, // Maximum number of messages per connection
+      rateDelta: 1000, // Time window for rate limiting
+      rateLimit: 5, // Maximum number of messages per rateDelta
       debug: process.env.NODE_ENV === 'development', // Enable debug in development
       logger: process.env.NODE_ENV === 'development' // Enable logging in development
     });
@@ -150,6 +160,49 @@ const generateRandomPassword = (length = 12) => {
     password += charset.charAt(Math.floor(Math.random() * charset.length));
   }
   return password;
+};
+
+// Helper function to send email with retry logic
+const sendEmailWithRetry = async (transporter, mailOptions, maxRetries = 3) => {
+  let lastError;
+  let currentTransporter = transporter;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      console.log(`Attempting to send email (attempt ${attempt}/${maxRetries})...`);
+      const info = await currentTransporter.sendMail(mailOptions);
+      console.log(`Email sent successfully on attempt ${attempt}:`, info.messageId);
+      return info;
+    } catch (error) {
+      lastError = error;
+      console.error(`Email send attempt ${attempt} failed:`, error.message);
+      console.error(`Error code: ${error.code}, Error command: ${error.command || 'N/A'}`);
+      
+      // If it's the last attempt, throw the error
+      if (attempt === maxRetries) {
+        throw error;
+      }
+      
+      // Wait before retrying (exponential backoff: 2s, 4s, 8s)
+      const waitTime = Math.min(2000 * Math.pow(2, attempt - 1), 10000);
+      console.log(`Waiting ${waitTime}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      // Recreate transporter if connection was lost
+      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET' || error.code === 'ESOCKET' || error.code === 'ETIMEDOUT') {
+        console.log("Connection issue detected, recreating transporter...");
+        // Force recreation by clearing the instance
+        transporterInstance = null;
+        currentTransporter = getTransporter();
+        if (!currentTransporter) {
+          throw new Error("Failed to recreate email transporter");
+        }
+        console.log("Transporter recreated successfully");
+      }
+    }
+  }
+  
+  throw lastError;
 };
 
 const register = async (req, res) => {
@@ -1545,8 +1598,9 @@ const userapprove = async (req, res) => {
     const newPassword = generateRandomPassword(12);
 
     // Try to send approval email first (blocking - must succeed before approving)
+    // Uses retry logic for better reliability
     try {
-      const emailInfo = await approvalEmailTransporter.sendMail({
+      const mailOptions = {
         from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
         to: user.email,
         subject: "Profile Approved - Your Login Credentials",
@@ -1575,7 +1629,9 @@ const userapprove = async (req, res) => {
                         <p style="color: #666; font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
                     </div>
                     `,
-      });
+      };
+      
+      const emailInfo = await sendEmailWithRetry(approvalEmailTransporter, mailOptions, 3);
 
       console.log(
         "Approval email with credentials sent successfully:",
@@ -1654,8 +1710,9 @@ const userreject = async (req, res) => {
     }
 
     // Try to send rejection email first (blocking - must succeed before rejecting)
+    // Uses retry logic for better reliability
     try {
-      const emailInfo = await rejectionEmailTransporter.sendMail({
+      const mailOptions = {
         from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
         to: user.email,
         subject: "Profile Verification Rejected",
@@ -1688,7 +1745,9 @@ const userreject = async (req, res) => {
                         <p style="color: #666; font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
                     </div>
                     `,
-      });
+      };
+      
+      const emailInfo = await sendEmailWithRetry(rejectionEmailTransporter, mailOptions, 3);
 
       console.log("Rejection email sent successfully:", emailInfo.messageId);
 
