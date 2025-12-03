@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 dotenv.config();
 import Express  from "express";
 const app = Express();
+app.set("trust proxy", 1);
 import cookieParser from "cookie-parser";
 import cors from 'cors'
 import morgan from "morgan";

@@ -10,7 +10,7 @@ const __dirname = dirname(__filename);
 // Use absolute path to ensure .env is found regardless of where server is started
 const envPath = join(__dirname, '../.env');
 console.log("Loading environment from:", envPath);
-app.set("trust proxy", 1);
+
 // Check if .env file exists
 if (!existsSync(envPath)) {
     console.error("❌ .env file NOT FOUND at:", envPath);
