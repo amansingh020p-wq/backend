@@ -10,7 +10,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
 
-
+app.use(morgan("dev"));
 app.use(cors({
     origin: ["http://localhost:3000", "http://127.0.0.1:3000", process.env.CORS_ORIGIN || "http://localhost:3000"],
     credentials: true
@@ -18,7 +18,7 @@ app.use(cors({
 
 app.use(helmet());
 
-app.use(morgan("dev"));
+
 
 
 const apiLimiter = rateLimit({
