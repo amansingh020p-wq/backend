@@ -1,6 +1,7 @@
 import User from "../models/user.model.js";
 import bcrypt from "bcrypt";
 import nodemailer from "nodemailer";
+import { Resend } from "resend";
 import mongoose from "mongoose";
 import { ApiError } from "../utils/ApiError.js";
 import { ApiResponse } from "../utils/ApiResponse.js";
@@ -150,6 +151,120 @@ const getTransporter = () => {
   return transporterInstance;
 };
 
+let resendClientInstance = null;
+let resendInitAttempted = false;
+
+const getResendClient = () => {
+  if (resendInitAttempted) {
+    return resendClientInstance;
+  }
+
+  resendInitAttempted = true;
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+
+  if (!apiKey) {
+    console.warn(
+      "RESEND_API_KEY not configured. Resend email service will be skipped."
+    );
+    return null;
+  }
+
+  try {
+    resendClientInstance = new Resend(apiKey);
+    console.log("✓ Resend email client initialized");
+  } catch (error) {
+    resendClientInstance = null;
+    console.error("Failed to initialize Resend client:", error.message);
+  }
+
+  return resendClientInstance;
+};
+
+const getDefaultFromAddress = () => {
+  const fromEnv = process.env.EMAIL_FROM?.trim();
+  if (fromEnv) return fromEnv;
+  const userEnv = process.env.EMAIL_USER?.trim();
+  if (userEnv) return userEnv;
+  return "Forex Flow <no-reply@forexflowtrade.com>";
+};
+
+const normalizeRecipients = (recipients) => {
+  if (!recipients) return [];
+  if (Array.isArray(recipients)) {
+    return recipients.filter(Boolean);
+  }
+  return [recipients].filter(Boolean);
+};
+
+const sendEmail = async (mailOptions) => {
+  const recipients = normalizeRecipients(mailOptions.to);
+
+  if (!recipients.length) {
+    throw new Error("Email recipient is required");
+  }
+
+  const senderAddress = mailOptions.from?.trim() || getDefaultFromAddress();
+  if (!senderAddress) {
+    throw new Error(
+      "Email sender address is not configured. Set EMAIL_FROM or EMAIL_USER."
+    );
+  }
+
+  const resendClient = getResendClient();
+
+  if (resendClient) {
+    try {
+      const resendPayload = {
+        from: senderAddress,
+        to: recipients,
+        subject: mailOptions.subject,
+        text: mailOptions.text,
+        html: mailOptions.html,
+      };
+
+      if (process.env.EMAIL_REPLY_TO) {
+        resendPayload.reply_to = process.env.EMAIL_REPLY_TO;
+      }
+
+      const resendResponse = await resendClient.emails.send(resendPayload);
+      console.log(
+        `📨 Email sent via Resend (id: ${resendResponse.id || "n/a"})`
+      );
+      return { provider: "resend", id: resendResponse.id };
+    } catch (error) {
+      console.error("Resend email sending failed:", error?.message || error);
+      if (error?.response?.error) {
+        console.error("Resend API error details:", error.response.error);
+      }
+      console.warn("Falling back to GoDaddy SMTP transporter...");
+    }
+  } else {
+    console.warn("Resend not configured. Using GoDaddy SMTP transporter...");
+  }
+
+  const transporter = getTransporter();
+  if (!transporter) {
+    throw new Error(
+      "Email service not configured. Set RESEND_API_KEY or GoDaddy SMTP credentials."
+    );
+  }
+
+  const info = await transporter.sendMail({
+    ...mailOptions,
+    from: senderAddress,
+    to: recipients.join(", "),
+  });
+  console.log(`📨 Email sent via SMTP (id: ${info.messageId})`);
+  return { provider: "smtp", id: info.messageId };
+};
+
+const isConnectionError = (error) => {
+  if (!error || !error.code) return false;
+  return ["ETIMEDOUT", "ECONNRESET", "ESOCKET", "ECONNREFUSED"].includes(
+    error.code
+  );
+};
+
 // import jwt from "jsonwebtoken"
 const test = (req, res) => {
   res.status(200).json({
@@ -185,46 +300,44 @@ const generateRandomPassword = (length = 12) => {
   return password;
 };
 
-// Helper function to send email with retry logic
-const sendEmailWithRetry = async (transporter, mailOptions, maxRetries = 3) => {
+// Helper function to send email with retry logic (Resend first, SMTP fallback)
+const sendEmailWithRetry = async (mailOptions, maxRetries = 3) => {
   let lastError;
-  let currentTransporter = transporter;
-  
+
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      console.log(`Attempting to send email (attempt ${attempt}/${maxRetries})...`);
-      const info = await currentTransporter.sendMail(mailOptions);
-      console.log(`Email sent successfully on attempt ${attempt}:`, info.messageId);
+      console.log(
+        `Attempting to send email (attempt ${attempt}/${maxRetries})...`
+      );
+      const info = await sendEmail(mailOptions);
+      console.log(
+        `Email sent successfully via ${info.provider} on attempt ${attempt}`
+      );
       return info;
     } catch (error) {
       lastError = error;
-      console.error(`Email send attempt ${attempt} failed:`, error.message);
-      console.error(`Error code: ${error.code}, Error command: ${error.command || 'N/A'}`);
-      
-      // If it's the last attempt, throw the error
+      console.error(
+        `Email send attempt ${attempt} failed:`,
+        error?.message || error
+      );
+      const errorCode = error?.code || "N/A";
+      console.error(`Error code: ${errorCode}`);
+
       if (attempt === maxRetries) {
         throw error;
       }
-      
-      // Wait before retrying (exponential backoff: 2s, 4s, 8s)
+
       const waitTime = Math.min(2000 * Math.pow(2, attempt - 1), 10000);
       console.log(`Waiting ${waitTime}ms before retry...`);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      
-      // Recreate transporter if connection was lost
-      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET' || error.code === 'ESOCKET' || error.code === 'ETIMEDOUT') {
-        console.log("Connection issue detected, recreating transporter...");
-        // Force recreation by clearing the instance
-        transporterInstance = null;
-        currentTransporter = getTransporter();
-        if (!currentTransporter) {
-          throw new Error("Failed to recreate email transporter");
-        }
-        console.log("Transporter recreated successfully");
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
+
+      if (isConnectionError(error)) {
+        console.log("SMTP connection issue detected, resetting transporter...");
+        transporterInstance = null; // Force recreation on next attempt
       }
     }
   }
-  
+
   throw lastError;
 };
 
@@ -437,17 +550,14 @@ const register = async (req, res) => {
     // Send email asynchronously (don't block registration if email fails)
     // Email 1: Sent when user registers - informs them they'll get password after verification
     // Note: This is completely non-blocking - response is sent immediately
-    const registrationEmailTransporter = getTransporter();
-    if (registrationEmailTransporter) {
-      // Use setImmediate to ensure this runs after the response is sent
-      setImmediate(() => {
-        registrationEmailTransporter
-          .sendMail({
-            from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
-            to: email,
-            subject: "Profile Approval Request Submitted",
-            text: `Dear ${firstName} ${lastName},\n\nYour profile approval request has been submitted successfully. Our admin team will review your profile and you will receive an email notification once your profile is approved or rejected.\n\nIMPORTANT: After verification, you will receive your login password via email to access and login to your account.\n\nThank you for registering with Forex Flow!`,
-            html: `
+    // Use setImmediate to ensure this runs after the response is sent
+    setImmediate(async () => {
+      try {
+        await sendEmail({
+          to: email,
+          subject: "Profile Approval Request Submitted",
+          text: `Dear ${firstName} ${lastName},\n\nYour profile approval request has been submitted successfully. Our admin team will review your profile and you will receive an email notification once your profile is approved or rejected.\n\nIMPORTANT: After verification, you will receive your login password via email to access and login to your account.\n\nThank you for registering with Forex Flow!`,
+          html: `
                     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
                         <h2 style="color: #43B852;">Profile Approval Request Submitted</h2>
                         <p>Dear ${firstName} ${lastName},</p>
@@ -475,28 +585,15 @@ const register = async (req, res) => {
                         <p style="color: #666; font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
                     </div>
                     `,
-          })
-          .then((info) => {
-            console.log(
-              "Approval request email sent successfully:",
-              info.messageId
-            );
-          })
-          .catch((emailError) => {
-            console.error(
-              "Email sending failed (but user was created):",
-              emailError.message
-            );
-          });
-      });
-    } else {
-      console.warn(
-        "Email transporter not available. Skipping registration email."
-      );
-      console.warn(
-        "To enable email sending, configure EMAIL_USER and EMAIL_PASS environment variables."
-      );
-    }
+        });
+        console.log("Approval request email sent successfully (async)");
+      } catch (emailError) {
+        console.error(
+          "Email sending failed (but user was created):",
+          emailError.message
+        );
+      }
+    });
 
     // Return success immediately after user is saved (don't wait for email)
     console.log("Sending success response for user:", newUser._id);
@@ -1606,16 +1703,6 @@ const userapprove = async (req, res) => {
       });
     }
 
-    // Check if email transporter is available
-    const approvalEmailTransporter = getTransporter();
-    if (!approvalEmailTransporter) {
-      return res.status(500).json({
-        status: "error",
-        message: "Email service is not configured. Cannot approve user without sending email notification.",
-        error: "Email transporter not available. Please configure EMAIL_USER and EMAIL_PASS in environment variables.",
-      });
-    }
-
     // Generate a new password for the user when approved
     // This password will be sent to the user via email
     const newPassword = generateRandomPassword(12);
@@ -1654,11 +1741,11 @@ const userapprove = async (req, res) => {
                     `,
       };
       
-      const emailInfo = await sendEmailWithRetry(approvalEmailTransporter, mailOptions, 3);
+      const emailInfo = await sendEmailWithRetry(mailOptions, 3);
 
       console.log(
         "Approval email with credentials sent successfully:",
-        emailInfo.messageId
+        emailInfo.id || "n/a"
       );
 
       // Only update user status if email was sent successfully
@@ -1722,16 +1809,6 @@ const userreject = async (req, res) => {
       });
     }
 
-    // Check if email transporter is available
-    const rejectionEmailTransporter = getTransporter();
-    if (!rejectionEmailTransporter) {
-      return res.status(500).json({
-        status: "error",
-        message: "Email service is not configured. Cannot reject user without sending email notification.",
-        error: "Email transporter not available. Please configure EMAIL_USER and EMAIL_PASS in environment variables.",
-      });
-    }
-
     // Try to send rejection email first (blocking - must succeed before rejecting)
     // Uses retry logic for better reliability
     try {
@@ -1770,9 +1847,9 @@ const userreject = async (req, res) => {
                     `,
       };
       
-      const emailInfo = await sendEmailWithRetry(rejectionEmailTransporter, mailOptions, 3);
+      const emailInfo = await sendEmailWithRetry(mailOptions, 3);
 
-      console.log("Rejection email sent successfully:", emailInfo.messageId);
+      console.log("Rejection email sent successfully via:", emailInfo.provider);
 
       // Only update user status if email was sent successfully
       user.isVerified = false;
