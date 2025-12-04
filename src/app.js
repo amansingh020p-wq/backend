@@ -12,7 +12,7 @@ import rateLimit from "express-rate-limit";
 
 app.use(morgan("dev"));
 app.use(cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000", process.env.CORS_ORIGIN || "http://localhost:3000"],
+    origin: ["http://localhost:3000", "http://127.0.0.1:3000", "https://www.forexflowtrade.com/", process.env.CORS_ORIGIN || "http://localhost:3000"],
     credentials: true
 }))
 
