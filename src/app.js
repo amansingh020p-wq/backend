@@ -10,11 +10,32 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 
 
-app.use(morgan("dev"));
-app.use(cors({
-    origin: ["http://localhost:3000", "http://127.0.0.1:3000", "https://www.forexflowtrade.com/", process.env.CORS_ORIGIN || "http://localhost:3000"],
-    credentials: true
-}))
+const defaultOrigins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://forexflowtrade.com",
+    "https://www.forexflowtrade.com",
+];
+
+const envOrigins = process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean)
+    : [];
+
+const allowedOrigins = [...new Set([...defaultOrigins, ...envOrigins])];
+
+app.use(
+    cors({
+        origin: (origin, callback) => {
+            if (!origin || allowedOrigins.includes(origin)) {
+                return callback(null, true);
+            }
+
+            console.warn(`Blocked by CORS: ${origin}`);
+            return callback(new Error("Not allowed by CORS"));
+        },
+        credentials: true,
+    })
+);
 
 app.use(helmet());
 
