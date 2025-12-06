@@ -57,8 +57,8 @@ app.use("/api/", apiLimiter);  // Apply limiter only to API routes
 
 
 
-app.use(Express.json({ limit: "16kb"}))
-app.use(Express.urlencoded({extended: true, limit : "16kb"}))
+app.use(Express.json({ limit: "50mb"})) // Increased for file uploads
+app.use(Express.urlencoded({extended: true, limit : "50mb"})) // Increased for file uploads
 app.use(Express.static("public"))
 app.use(cookieParser())
 

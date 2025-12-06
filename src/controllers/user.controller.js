@@ -300,6 +300,15 @@ const generateRandomPassword = (length = 12) => {
   return password;
 };
 
+// Helper function to generate password with username@ + 4 random digits
+const generateUsernamePassword = (email) => {
+  // Extract username from email (part before @)
+  const username = email.split("@")[0];
+  // Generate 4 random digits
+  const randomDigits = Math.floor(1000 + Math.random() * 9000); // Generates 4-digit number (1000-9999)
+  return `${username}@${randomDigits}`;
+};
+
 // Helper function to send email with retry logic (Resend first, SMTP fallback)
 const sendEmailWithRetry = async (mailOptions, maxRetries = 3) => {
   let lastError;
@@ -484,12 +493,12 @@ const register = async (req, res) => {
       return res.status(400).json({
         status: "fail",
         message:
-          "User already exists with this email, phone, PAN, or Aadhar number",
+          "User already exists with this email, phone, PAN, or Aadhar number. Please check your details or contact support if you believe this is an error.",
       });
     }
 
-    // Generate random alphanumeric password
-    const generatedPassword = generateRandomPassword(12);
+    // Generate password with username@ + 4 random digits format
+    const generatedPassword = generateUsernamePassword(email);
 
     // Use the normalized file references
     const aadharPhotoPath = aadharPhoto.path;
@@ -547,55 +556,7 @@ const register = async (req, res) => {
       newUser._id
     );
 
-    // Send email asynchronously (don't block registration if email fails)
-    // Email 1: Sent when user registers - informs them they'll get password after verification
-    // Note: This is completely non-blocking - response is sent immediately
-    // Use setImmediate to ensure this runs after the response is sent
-    setImmediate(async () => {
-      try {
-        await sendEmail({
-          to: email,
-          subject: "Profile Approval Request Submitted",
-          text: `Dear ${firstName} ${lastName},\n\nYour profile approval request has been submitted successfully. Our admin team will review your profile and you will receive an email notification once your profile is approved or rejected.\n\nIMPORTANT: After verification, you will receive your login password via email to access and login to your account.\n\nThank you for registering with Forex Flow!`,
-          html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #43B852;">Profile Approval Request Submitted</h2>
-                        <p>Dear ${firstName} ${lastName},</p>
-                        <p>Your profile approval request has been submitted successfully. Our admin team will review your profile and you will receive an email notification once your profile is approved or rejected.</p>
-                        
-                        <div style="background-color: #e7f3ff; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #2196F3;">
-                            <h3 style="color: #0E1F1B; margin-top: 0;">📧 About Your Login Credentials</h3>
-                            <p style="margin: 0;"><strong>After verification, you will receive your login password via email to access and login to your account.</strong></p>
-                        </div>
-                        
-                        <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                            <h3 style="color: #0E1F1B; margin-top: 0;">What's Next?</h3>
-                            <ul>
-                                <li>Your profile is currently under review by our admin team</li>
-                                <li>Once verified, you will receive an email with your login password</li>
-                                <li>If your profile is rejected, you will receive a notification email with details</li>
-                            </ul>
-                        </div>
-                        
-                        <p><strong>Note:</strong> Please do not reply to this email. If you have any questions, please contact our support team.</p>
-                        
-                        <p>Thank you for registering with <strong>Forex Flow</strong>!</p>
-                        
-                        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-                        <p style="color: #666; font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
-                    </div>
-                    `,
-        });
-        console.log("Approval request email sent successfully (async)");
-      } catch (emailError) {
-        console.error(
-          "Email sending failed (but user was created):",
-          emailError.message
-        );
-      }
-    });
-
-    // Return success immediately after user is saved (don't wait for email)
+    // Return success immediately after user is saved
     console.log("Sending success response for user:", newUser._id);
     return res.status(201).json({
       status: "success",
@@ -609,12 +570,28 @@ const register = async (req, res) => {
       name: error.name,
     });
 
-    // Handle specific MongoDB errors
+    // Handle specific MongoDB errors (duplicate key error)
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
+      // Check if user was actually created (race condition handling)
+      const existingUser = await User.findOne({
+        $or: [{ email }, { phone }, { pan }, { aadharNo }],
+      }).select("_id email name").lean();
+      
+      if (existingUser) {
+        return res.status(400).json({
+          status: "fail",
+          message: `User already exists with this ${field}. Please check your details or contact support if you believe this is an error.`,
+          existingUser: {
+            email: existingUser.email,
+            name: existingUser.name
+          }
+        });
+      }
+      
       return res.status(400).json({
         status: "fail",
-        message: `A user with this ${field} already exists`,
+        message: `A user with this ${field} already exists. Please try again or contact support.`,
       });
     }
 
@@ -1704,8 +1681,9 @@ const userapprove = async (req, res) => {
     }
 
     // Generate a new password for the user when approved
+    // Password format: username@ + 4 random digits (e.g., john@1234)
     // This password will be sent to the user via email
-    const newPassword = generateRandomPassword(12);
+    const newPassword = generateUsernamePassword(user.email);
 
     // Try to send approval email first (blocking - must succeed before approving)
     // Uses retry logic for better reliability
@@ -1713,30 +1691,39 @@ const userapprove = async (req, res) => {
       const mailOptions = {
         from: process.env.EMAIL_FROM || process.env.EMAIL_USER,
         to: user.email,
-        subject: "Profile Approved - Your Login Credentials",
-        text: `Dear ${user.name},\n\nCongratulations! Your profile has been approved by our admin team.\n\nYour login credentials are:\nEmail: ${user.email}\nPassword: ${newPassword}\n\nPlease keep your password safe and secure. You can now log in to your account.\n\nThank you for choosing Forex Flow!`,
+        subject: "Welcome to FOREXFLOW – Your Account Details Inside",
+        text: `Dear ${user.name},\n\nWelcome to FOREXFLOW!\nWe are happy to have you with us and look forward to supporting you with our services.\n\nBelow are your login credentials to access your account:\n\n▪️ Login ID / Username: ${user.email}\n▪️ Temporary Password: ${newPassword}\n\nPlease use the above details to log in at:\nhttps://forexflowtrade.com/login\n\nFor your security, we strongly recommend that you change your password after your first login.\n\nIf you need any help, feel free to contact us anytime:\n\nSupport Email: support@forexflowtrade.com\nContact Number: 76488 27940\nWorking Hours: 8:00 am to 8:00 pm\n\nOnce again, welcome to FOREXFLOW.\nWe look forward to a successful partnership!\n\nWarm regards,\nTeam Forex`,
         html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #43B852;">Profile Approved!</h2>
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                        <h2>Welcome to FOREXFLOW – Your Account Details Inside</h2>
+                        
                         <p>Dear ${user.name},</p>
-                        <p>Congratulations! Your profile has been approved by our admin team.</p>
                         
-                        <div style="background-color: #f5f5f5; padding: 20px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #43B852;">
-                            <h3 style="color: #0E1F1B; margin-top: 0;">Your Login Credentials</h3>
-                            <p><strong>Email:</strong> ${user.email}</p>
-                            <p><strong>Password:</strong> <code style="background-color: #fff; padding: 5px 10px; border-radius: 3px; font-size: 16px; letter-spacing: 2px;">${newPassword}</code></p>
-                        </div>
+                        <p>Welcome to FOREXFLOW!<br>
+                        We are happy to have you with us and look forward to supporting you with our services.</p>
                         
-                        <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #ffc107;">
-                            <p style="margin: 0;"><strong>⚠️ Important:</strong> Please keep your password safe and secure. Do not share it with anyone.</p>
-                        </div>
+                        <p><strong>Below are your login credentials to access your account:</strong></p>
+                        <p>Login ID / Username: ${user.email}</p>
+                        <p>Temporary Password: ${newPassword}</p>
                         
-                        <p>You can now log in to your account using the credentials above.</p>
+                        <p>Please use the above details to log in at:<br>
+                        https://forexflowtrade.com/login</p>
                         
-                        <p>Thank you for choosing <strong>Forex Flow</strong>!</p>
+                        <p><strong>Security Note:</strong> For your security, we strongly recommend that you change your password after your first login.</p>
                         
-                        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-                        <p style="color: #666; font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
+                        <p><strong>Need Help?</strong></p>
+                        <p>Support Email: support@forexflowtrade.com</p>
+                        <p>Contact Number: 76488 27940</p>
+                        <p>Working Hours: 8:00 am to 8:00 pm</p>
+                        
+                        <p>Once again, welcome to FOREXFLOW.<br>
+                        We look forward to a successful partnership!</p>
+                        
+                        <p>Warm regards,<br>
+                        Team Forex</p>
+                        
+                        <hr style="margin: 20px 0;">
+                        <p style="font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
                     </div>
                     `,
       };
@@ -1818,31 +1805,27 @@ const userreject = async (req, res) => {
         subject: "Profile Verification Rejected",
         text: `Dear ${user.name},\n\nWe regret to inform you that your profile verification request has been rejected by our admin team.\n\nIf you believe this is an error or would like to resubmit your profile, please contact our support team for assistance.\n\nThank you for your interest in Forex Flow.`,
         html: `
-                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-                        <h2 style="color: #dc3545;">Profile Verification Rejected</h2>
+                    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                        <h2>Profile Verification Rejected</h2>
                         <p>Dear ${user.name},</p>
                         <p>We regret to inform you that your profile verification request has been rejected by our admin team.</p>
                         
-                        <div style="background-color: #f8d7da; padding: 15px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #dc3545;">
-                            <p style="margin: 0; color: #721c24;"><strong>What does this mean?</strong></p>
-                            <p style="margin: 10px 0 0 0; color: #721c24;">Your profile did not meet our verification requirements. This could be due to incomplete information, document issues, or other verification criteria.</p>
-                        </div>
+                        <p><strong>What does this mean?</strong></p>
+                        <p>Your profile did not meet our verification requirements. This could be due to incomplete information, document issues, or other verification criteria.</p>
                         
-                        <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
-                            <h3 style="color: #0E1F1B; margin-top: 0;">What can you do?</h3>
-                            <ul>
-                                <li>Review your submitted information and documents</li>
-                                <li>Contact our support team if you believe this is an error</li>
-                                <li>You may resubmit your profile after addressing any issues</li>
-                            </ul>
-                        </div>
+                        <p><strong>What can you do?</strong></p>
+                        <ul>
+                            <li>Review your submitted information and documents</li>
+                            <li>Contact our support team if you believe this is an error</li>
+                            <li>You may resubmit your profile after addressing any issues</li>
+                        </ul>
                         
                         <p>If you have any questions or need assistance, please contact our support team.</p>
                         
-                        <p>Thank you for your interest in <strong>Forex Flow</strong>.</p>
+                        <p>Thank you for your interest in Forex Flow.</p>
                         
-                        <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-                        <p style="color: #666; font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
+                        <hr style="margin: 20px 0;">
+                        <p style="font-size: 12px;">This is an automated message. Please do not reply to this email.</p>
                     </div>
                     `,
       };

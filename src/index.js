@@ -88,10 +88,14 @@ console.log("Port : ", process.env.PORT)
 
 connectDB()
 .then(()=>{
-    app.listen(process.env.PORT ,()=>{
+    const server = app.listen(process.env.PORT ,()=>{
         console.log(`Server is listening on port : ${process.env.PORT}`);
-
-    })
+    });
+    
+    // Set server timeout to 2 minutes (120000ms) for file uploads
+    server.timeout = 120000;
+    server.keepAliveTimeout = 120000;
+    server.headersTimeout = 120000;
 })
 .catch((error)=>{
     console.error("Mongoose connection failed",error)
