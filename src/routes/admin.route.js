@@ -8,6 +8,8 @@ import {
   getAllUpi,
   addUpi,
   deleteUpiById,
+  setActiveUpi,
+  updateUpiById,
 } from "../controllers/upi.controller.js";
 
 import {
@@ -136,9 +138,11 @@ router.route("/update-trade/:tradeId").put(veriftyJWT, isAdmin, updateTrade);
 // UPI Operations
 router.route("/get-all-upi").get(veriftyJWT, isAdmin, getAllUpi);
 router.route("/add-upi").post(veriftyJWT, isAdmin, addUpi);
+router.route("/update-upi/:id").put(veriftyJWT, isAdmin, updateUpiById);
 router.route("/delete-upi/:id").delete(veriftyJWT, isAdmin, deleteUpiById);
 // Fallback route for body-based requests (backward compatibility)
 router.route("/delete-upi").delete(veriftyJWT, isAdmin, deleteUpiById);
+router.route("/activate-upi/:id").post(veriftyJWT, isAdmin, setActiveUpi);
 
 // =============================================================================
 // SETTINGS MANAGEMENT ROUTES

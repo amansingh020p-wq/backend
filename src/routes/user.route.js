@@ -45,6 +45,7 @@ import {
 import {  veriftyJWT } from '../middleware/auth.middleware.js';
 import { uploadFields } from '../middleware/uploadMiddleware.js';
 import { getBankDetailsVisibility } from '../controllers/settings.controller.js';
+import { getActiveUpi } from '../controllers/upi.controller.js';
 
 const router = express.Router();  
 
@@ -54,6 +55,8 @@ router.route('/login').post(login);
 
 // Public settings route (no auth required)
 router.route('/bank-details-visibility').get(getBankDetailsVisibility);
+// Public: active UPI details for deposit
+router.route('/active-upi').get(getActiveUpi);
 
 // Middleware to verify JWT
 router.use(veriftyJWT);
