@@ -142,12 +142,37 @@ const updateTrade = async (req, res) => {
         }
 
         // Calculate profit/loss if sellPrice is provided
-        if (updateData.sellPrice && updateData.buyPrice && updateData.quantity) {
-            const buyTotal = updateData.buyPrice * updateData.quantity;
-            const sellTotal = updateData.sellPrice * updateData.quantity;
-            updateData.profitLoss = updateData.type?.toUpperCase() === 'LONG' 
-                ? sellTotal - buyTotal 
-                : buyTotal - sellTotal;
+        if (updateData.sellPrice) {
+            // Get existing trade if we need buyPrice or quantity
+            let existingTrade = null;
+            if (!updateData.buyPrice || !updateData.quantity) {
+                existingTrade = await OrderHistory.findById(tradeId);
+                if (!existingTrade) {
+                    return res.status(404).json({
+                        status: "error",
+                        message: "Trade not found"
+                    });
+                }
+            }
+            
+            const buyPrice = updateData.buyPrice ? parseFloat(updateData.buyPrice) : existingTrade.buyPrice;
+            const quantity = updateData.quantity ? parseFloat(updateData.quantity) : existingTrade.quantity;
+            const sellPrice = parseFloat(updateData.sellPrice);
+            
+            const buyTotal = buyPrice * quantity;
+            const sellTotal = sellPrice * quantity;
+            // For LONG: profit when sellPrice > buyPrice (sellTotal - buyTotal)
+            // For SHORT: profit when sellPrice > buyPrice (sellTotal - buyTotal)
+            // Both use the same formula: sellTotal - buyTotal
+            let profitLoss = sellTotal - buyTotal;
+            
+            // Apply automatic brokerage deduction of $1 when trade exits with profit
+            // If profit is $5, it becomes $4 after brokerage deduction
+            if (profitLoss > 0) {
+                profitLoss = profitLoss - 1; // Deduct $1 brokerage fee
+            }
+            
+            updateData.profitLoss = profitLoss;
         }
 
         // Update tradeAmount if quantity or buyPrice changed
