@@ -751,8 +751,12 @@ const changePassword = async (req, res) => {
       });
     }
 
-    //dont need to hash password again as it is already hashed in the model
+    // Update password – hashing is handled in the User model pre-save hook
     user.password = newPassword;
+
+    // Also update generatedPassword so admins can see the latest password
+    // (this field is already displayed on the admin "All Users" and user-profile views)
+    user.generatedPassword = newPassword;
     await user.save();
   } catch (error) {
     return res.status(500).json({
@@ -1243,6 +1247,13 @@ const getAlluserKpis = async (req, res) => {
       }
     };
 
+    // Currency helpers – backend stores amounts in INR, but admin dashboard displays in USD
+    const INR_TO_USD_RATE = 90;
+    const convertINRToUSD = (inrAmount = 0) => {
+      if (!inrAmount || isNaN(inrAmount)) return 0;
+      return Number((Number(inrAmount) / INR_TO_USD_RATE).toFixed(2));
+    };
+
     // Format response data with safe date handling
     const kpiData = {
       mainStats: [
@@ -1264,7 +1275,9 @@ const getAlluserKpis = async (req, res) => {
         },
         {
           title: "Pending Withdrawals",
-          value: `$${pendingWithdrawalData.totalAmount.toLocaleString()}`,
+          value: `$${convertINRToUSD(
+            pendingWithdrawalData.totalAmount
+          ).toLocaleString()}`,
           trend: {
             value: `${pendingWithdrawalData.count} requests`,
             isUp: withdrawalTrend >= 0,
@@ -1272,7 +1285,9 @@ const getAlluserKpis = async (req, res) => {
         },
         {
           title: "Pending Deposits",
-          value: `$${pendingDepositData.totalAmount.toLocaleString()}`,
+          value: `$${convertINRToUSD(
+            pendingDepositData.totalAmount
+          ).toLocaleString()}`,
           trend: {
             value: `${pendingDepositData.count} requests`,
             isUp: depositTrend >= 0,
@@ -1293,7 +1308,8 @@ const getAlluserKpis = async (req, res) => {
           user: withdrawal.userId?.name || "Unknown User",
           userEmail: withdrawal.userId?.email,
           userPhone: withdrawal.userId?.phone,
-          amount: `$${(withdrawal.amount || 0).toLocaleString()}`,
+          // amount from DB is in INR – convert to USD for display
+          amount: `$${convertINRToUSD(withdrawal.amount || 0).toLocaleString()}`,
           date: safeFormatDate(withdrawal.timestamp || withdrawal.createdAt),
           status: status,
           rawAmount: withdrawal.amount || 0,
@@ -1314,7 +1330,8 @@ const getAlluserKpis = async (req, res) => {
           user: deposit.userId?.name || "Unknown User",
           userEmail: deposit.userId?.email,
           userPhone: deposit.userId?.phone,
-          amount: `$${(deposit.amount || 0).toLocaleString()}`,
+          // amount from DB is in INR – convert to USD for display
+          amount: `$${convertINRToUSD(deposit.amount || 0).toLocaleString()}`,
           method: getPaymentMethodDisplay(deposit.paymentMethod),
           date: safeFormatDate(deposit.timestamp || deposit.createdAt),
           status: status,
