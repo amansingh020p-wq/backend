@@ -3,49 +3,139 @@ import Jwt  from "jsonwebtoken";
 
 
 const veriftyJWT = async (req, res, next) => {
-  // console.log("Auth middleware called")
-    try {
-        const token = req.cookies?.accessToken
-        // console.log("token form auth middleware", token)
-        if (!token) {
-            return res.status(401).json({ message: "Unauthorized access" })
-        }
+  try {
+    // Extract token from cookies or Authorization header
+    let token = req.cookies?.accessToken;
     
-        const decodedToken = await Jwt.verify(token, process.env.ACCESS_TOKEN_SECRET)
-    
-        const user = await User.findById(decodedToken?._id).select("-password -refreshToken")
-    
-        if (!user) {
-            //NEXT TODO
-            return res.status(401).json({ message: "Invalid Access Token" })
-        }
-    
-        req.user = user;
-        req.userId = user._id;
-        // req.role = user.role
-        next();
-    } catch (error) {
-        return res.status(401).json({ message: "Invalid access token" })
+    if (!token) {
+      const authHeader = req.header("Authorization");
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        token = authHeader.replace("Bearer ", "");
+      }
     }
+
+    if (!token) {
+      return res.status(401).json({ 
+        status: "error",
+        message: "Unauthorized access. Authentication token required." 
+      });
+    }
+
+    // Verify and decode token
+    let decodedToken;
+    try {
+      decodedToken = await Jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    } catch (jwtError) {
+      if (jwtError.name === 'TokenExpiredError') {
+        return res.status(401).json({ 
+          status: "error",
+          message: "Token has expired. Please login again." 
+        });
+      } else if (jwtError.name === 'JsonWebTokenError') {
+        return res.status(401).json({ 
+          status: "error",
+          message: "Invalid token." 
+        });
+      }
+      return res.status(401).json({ 
+        status: "error",
+        message: "Token verification failed." 
+      });
+    }
+
+    // Fetch user from database
+    const user = await User.findById(decodedToken?._id).select("-password -refreshToken");
+    if (!user) {
+      return res.status(401).json({ 
+        status: "error",
+        message: "Invalid Access Token. User not found." 
+      });
+    }
+
+    // Attach user info to request object
+    req.user = user;
+    req.userId = user._id;
+    
+    next();
+  } catch (error) {
+    console.error("[AUTH] JWT verification error:", error);
+    return res.status(500).json({ 
+      status: "error",
+      message: "Internal server error during authentication" 
+    });
+  }
 }
 
 const isAdmin = async (req, res, next) => {
-  const token = req.cookies?.accessToken || req.header("Authorization").replace("Bearer ", "")
-  if (!token) {
-    return res.status(401).json({ message: "Unauthorized access" })
+  try {
+    // Extract token from cookies or Authorization header
+    let token = req.cookies?.accessToken;
+    
+    if (!token) {
+      const authHeader = req.header("Authorization");
+      if (authHeader && authHeader.startsWith("Bearer ")) {
+        token = authHeader.replace("Bearer ", "");
+      }
+    }
+    
+    if (!token) {
+      return res.status(401).json({ 
+        status: "error",
+        message: "Unauthorized access. Authentication token required." 
+      });
+    }
+
+    // Verify and decode token
+    let decodedToken;
+    try {
+      decodedToken = await Jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+    } catch (jwtError) {
+      return res.status(401).json({ 
+        status: "error",
+        message: "Invalid or expired token" 
+      });
+    }
+
+    // Fetch user from database
+    const user = await User.findById(decodedToken?._id).select("-password -refreshToken");
+    if (!user) {
+      return res.status(401).json({ 
+        status: "error",
+        message: "Invalid Access Token. User not found." 
+      });
+    }
+
+    // Check if user account is active
+    if (user.isVerified === false) {
+      return res.status(403).json({ 
+        status: "error",
+        message: "Account not verified. Access denied." 
+      });
+    }
+
+    // Verify admin role
+    if (user.role !== "admin") {
+      // Log unauthorized access attempt
+      console.warn(`[SECURITY] Unauthorized admin access attempt by user: ${user.email} (Role: ${user.role}) from IP: ${req.ip}`);
+      return res.status(403).json({ 
+        status: "error",
+        message: "Forbidden. Admin access required." 
+      });
+    }
+
+    // Attach user info to request object
+    req.user = user;
+    req.userId = user._id;
+    req.role = user.role;
+    
+    next();
+  } catch (error) {
+    console.error("[SECURITY] Admin middleware error:", error);
+    return res.status(500).json({ 
+      status: "error",
+      message: "Internal server error during authentication" 
+    });
   }
-  const decodedToken = await Jwt.verify(token, process.env.ACCESS_TOKEN_SECRET)
-  const user = await User.findById(decodedToken?._id).select("-password -refreshToken")
-  if (!user) {
-    return res.status(401).json({ message: "Invalid Access Token" })
-  }
-  if (user.role !== "admin") {
-    return res.status(403).json({ message: "Forbidden" })
-  }
-  req.user = user;
-  req.userId = user._id;
-  req.role = user.role;
-  next();
 }
 
 export {

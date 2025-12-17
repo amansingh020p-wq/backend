@@ -46,12 +46,15 @@ import {  veriftyJWT } from '../middleware/auth.middleware.js';
 import { uploadFields } from '../middleware/uploadMiddleware.js';
 import { getBankDetailsVisibility } from '../controllers/settings.controller.js';
 import { getActiveUpi } from '../controllers/upi.controller.js';
+import { loginLimiter } from '../middleware/rateLimit.middleware.js';
+import { validateLogin } from '../middleware/validation.middleware.js';
 
 const router = express.Router();  
 
 // Register route with file upload
 router.post('/register', uploadFields, register);
-router.route('/login').post(login);
+// Apply brute force protection and input validation to login route
+router.route('/login').post(loginLimiter, validateLogin, login);
 
 // Public settings route (no auth required)
 router.route('/bank-details-visibility').get(getBankDetailsVisibility);

@@ -37,11 +37,23 @@ app.use(
     })
 );
 
-app.use(helmet());
+// Configure Helmet with security headers
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'"],
+            imgSrc: ["'self'", "data:", "https:"],
+        },
+    },
+    crossOriginEmbedderPolicy: false, // Allow embedding if needed
+}));
 
 
 
 
+// General API rate limiter
 const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 200, // max 200 requests per IP per 15 mins (increased to handle React StrictMode double renders)
@@ -54,6 +66,7 @@ const apiLimiter = rateLimit({
     },
 });
 app.use("/api/", apiLimiter);  // Apply limiter only to API routes
+
 
 
 

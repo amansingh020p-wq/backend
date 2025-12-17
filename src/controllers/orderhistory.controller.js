@@ -19,6 +19,8 @@ const getUserTradeHistory = async (req, res) => {
             .sort({ createdAt: -1 });
 
         // Format data to match frontend expectations
+        // Note: All monetary values (buyPrice, sellPrice, profitLoss, tradeAmount) are stored in INR
+        // Frontend will convert to USD for display
         const formattedData = tradeHistory.map(trade => ({
             id: trade._id,
             date: trade.tradeDate.toISOString().split('T')[0],
@@ -27,9 +29,7 @@ const getUserTradeHistory = async (req, res) => {
             buyPrice: trade.buyPrice,
             sellPrice: trade.sellPrice,
             type: trade.type,
-            profitLoss: trade.profitLoss ? 
-                (trade.profitLoss >= 0 ? `+$${trade.profitLoss.toFixed(2)}` : `-$${Math.abs(trade.profitLoss).toFixed(2)}`) 
-                : '$0.00',
+            profitLoss: trade.profitLoss || 0, // Return raw value in INR, frontend will convert to USD
             status: trade.status.toLowerCase(),
             tradeAmount: trade.tradeAmount,
             priceRange: trade.priceRange || null,
@@ -63,8 +63,10 @@ const createTrade = async (req, res) => {
             });
         }
 
-        const tradeAmount = quantity * buyPrice;
+        // Parse quantity and buyPrice before calculating tradeAmount
+        const quantityNum = parseFloat(quantity);
         const buyPriceNum = parseFloat(buyPrice);
+        const tradeAmount = quantityNum * buyPriceNum;
         
         // Set mid to buyPrice, and handle range
         const priceRange = {
@@ -83,7 +85,7 @@ const createTrade = async (req, res) => {
             userId,
             symbol,
             type: tradeType.toUpperCase(),
-            quantity: parseFloat(quantity),
+            quantity: quantityNum,
             buyPrice: buyPriceNum,
             tradeAmount,
             priceRange,
@@ -166,10 +168,12 @@ const updateTrade = async (req, res) => {
             // Both use the same formula: sellTotal - buyTotal
             let profitLoss = sellTotal - buyTotal;
             
-            // Apply automatic brokerage deduction of $1 when trade exits with profit
-            // If profit is $5, it becomes $4 after brokerage deduction
+            // Apply automatic brokerage deduction of $1 USD when trade exits with profit
+            // $1 USD = 90 INR (based on conversion rate)
+            // If profit is $5 USD (450 INR), it becomes $4 USD (360 INR) after brokerage deduction
+            const BROKERAGE_FEE_INR = 90; // $1 USD = 90 INR
             if (profitLoss > 0) {
-                profitLoss = profitLoss - 1; // Deduct $1 brokerage fee
+                profitLoss = profitLoss - BROKERAGE_FEE_INR; // Deduct $1 USD (90 INR) brokerage fee
             }
             
             updateData.profitLoss = profitLoss;

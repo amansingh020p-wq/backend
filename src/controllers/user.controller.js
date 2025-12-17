@@ -624,25 +624,29 @@ const login = async (req, res) => {
   }
   try {
     const user = await User.findOne({ email });
-    // console.log(`User from DB : ${req.userId}`)
-    if (!user) {
-      return res.status(401).json({
-        status: "fail",
-        message: "Invalid email",
-      });
+    
+    // SECURITY: Always perform password comparison to prevent timing attacks
+    // Even if user doesn't exist, perform bcrypt.compare to maintain consistent timing
+    let isPasswordCorrect = false;
+    if (user) {
+      isPasswordCorrect = await bcrypt.compare(
+        password.trim(),
+        user.password.trim()
+      );
+    } else {
+      // Perform dummy bcrypt comparison to prevent timing attacks (user enumeration)
+      // This makes login attempts take similar time regardless of whether user exists
+      await bcrypt.compare(password.trim(), '$2b$10$dummyHashToPreventTimingAttacks1234567890abcdefghijklmn');
     }
-
-    const isPasswordCorrect = await bcrypt.compare(
-      password.trim(),
-      user.password.trim()
-    );
-    console.log(
-      `Old Password: ${user.password} New Password: ${password} Is Password Correct: ${isPasswordCorrect}`
-    );
-    if (!isPasswordCorrect) {
+    
+    // SECURITY: Return generic error message for both invalid email and password
+    // This prevents user enumeration attacks
+    if (!user || !isPasswordCorrect) {
+      // Log failed login attempt (without password) for security monitoring
+      console.warn(`[SECURITY] Failed login attempt for email: ${email} from IP: ${req.ip}`);
       return res.status(401).json({
         status: "fail",
-        message: "Invalid password",
+        message: "Invalid email or password", // Generic message to prevent user enumeration
       });
     }
 
@@ -1904,7 +1908,7 @@ const getUserbyId = async (req, res) => {
       });
     }
 
-    // Get user balance information
+    // Get user balance information (trading-aware)
     let balanceInfo = {
       accountBalance: 0,
       totalDeposit: 0,
@@ -1917,7 +1921,7 @@ const getUserbyId = async (req, res) => {
       // Convert userId to ObjectId
       const userIdObjectId = new mongoose.Types.ObjectId(userId);
 
-      // Calculate balance directly using Transaction model (more reliable than static method)
+      // 1) Deposits and withdrawals
       const balanceData = await Transaction.aggregate([
         { $match: { userId: userIdObjectId } },
         {
@@ -1955,28 +1959,38 @@ const getUserbyId = async (req, res) => {
         },
       ]);
 
+      let baseBalance = 0;
+
       if (balanceData && balanceData.length > 0) {
         const data = balanceData[0];
         balanceInfo.totalDeposit = data.totalDeposits || 0;
         balanceInfo.totalWithdrawals = data.totalWithdrawals || 0;
-        balanceInfo.accountBalance =
+        baseBalance =
           (data.totalDeposits || 0) - (data.totalWithdrawals || 0);
       }
 
-      // Get order investment and profit/loss from OrderHistory
+      // 2) Open investment and realised profit/loss from OrderHistory
       const orderStats = await OrderHistory.aggregate([
         { $match: { userId: userIdObjectId } },
         {
           $group: {
             _id: null,
-            totalInvestment: {
+            openInvestment: {
               $sum: {
-                $ifNull: ["$tradeAmount", 0],
+                $cond: [
+                  { $eq: ["$status", "OPEN"] },
+                  { $ifNull: ["$tradeAmount", 0] },
+                  0,
+                ],
               },
             },
-            totalProfitLoss: {
+            realisedProfitLoss: {
               $sum: {
-                $ifNull: ["$profitLoss", 0],
+                $cond: [
+                  { $eq: ["$status", "CLOSED"] },
+                  { $ifNull: ["$profitLoss", 0] },
+                  0,
+                ],
               },
             },
           },
@@ -1984,9 +1998,17 @@ const getUserbyId = async (req, res) => {
       ]);
 
       if (orderStats && orderStats.length > 0) {
-        balanceInfo.orderInvestment = orderStats[0].totalInvestment || 0;
-        balanceInfo.profitLoss = orderStats[0].totalProfitLoss || 0;
+        const stats = orderStats[0];
+        balanceInfo.orderInvestment = stats.openInvestment || 0;
+        balanceInfo.profitLoss = stats.realisedProfitLoss || 0;
       }
+
+      // 3) Final trading-style account balance:
+      //    baseBalance - capital locked in open trades + realised P&L
+      balanceInfo.accountBalance =
+        baseBalance -
+        (balanceInfo.orderInvestment || 0) +
+        (balanceInfo.profitLoss || 0);
     } catch (balanceError) {
       console.error("Error fetching balance info:", balanceError);
       console.error("Balance error stack:", balanceError.stack);
@@ -2237,40 +2259,81 @@ const getOrderHistory = async (req, res, next) => {
 };
 
 // Helper function to calculate summary data
+// NOTE: Net Profit/Loss is now calculated ONLY for the current 12‑hour window.
+// The window resets every 12 hours (00:00–12:00 and 12:00–24:00 server time).
 const calculateSummaryData = async (userId) => {
+  // Fetch all trades for overall stats
   const trades = await OrderHistory.find({ userId });
 
   const totalTrades = trades.length;
   const totalInvestment = trades.reduce(
-    (sum, trade) => sum + trade.tradeAmount,
+    (sum, trade) => sum + (trade.tradeAmount || 0),
     0
   );
-  const totalProfitLoss = trades.reduce(
+
+  // ---- 12‑hour window for Net Profit/Loss ----
+  const now = new Date();
+
+  // Start of today (00:00)
+  const startOfDay = new Date(now);
+  startOfDay.setHours(0, 0, 0, 0);
+
+  // Midday (12:00)
+  const midday = new Date(startOfDay);
+  midday.setHours(12, 0, 0, 0);
+
+  // Determine current 12‑hour window
+  let windowStart;
+  let windowEnd;
+
+  if (now < midday) {
+    // First half of the day: 00:00–12:00
+    windowStart = startOfDay;
+    windowEnd = midday;
+  } else {
+    // Second half: 12:00–24:00
+    windowStart = midday;
+    windowEnd = new Date(startOfDay);
+    windowEnd.setDate(windowEnd.getDate() + 1); // next day's 00:00
+  }
+
+  // Filter trades that fall in the current 12‑hour window based on tradeDate
+  const tradesInCurrentWindow = trades.filter((trade) => {
+    if (!trade.tradeDate) return false;
+    const tradeTime = new Date(trade.tradeDate).getTime();
+    return tradeTime >= windowStart.getTime() && tradeTime < windowEnd.getTime();
+  });
+
+  const totalProfitLossCurrentWindow = tradesInCurrentWindow.reduce(
     (sum, trade) => sum + (trade.profitLoss || 0),
     0
   );
 
-  // You can add logic here to calculate changes from last week
-  // For now, returning basic calculations
+  // Format Net P/L for the card – only for current 12‑hour window
+  const formattedNetPL =
+    totalProfitLossCurrentWindow >= 0
+      ? `+$${totalProfitLossCurrentWindow.toFixed(2)}`
+      : `-$${Math.abs(totalProfitLossCurrentWindow).toFixed(2)}`;
 
   return [
     {
       title: "Total Trades",
       value: totalTrades.toString(),
-      change: "+5 from last week", // You can calculate this dynamically
+      // You can later change this to be dynamic (e.g., vs previous period)
+      change: "+5 from last week",
     },
     {
       title: "Total Investment",
       value: `$${totalInvestment.toLocaleString()}`,
-      change: "+$1,200 from last week", // You can calculate this dynamically
+      // Static placeholder – can be replaced with real comparison logic
+      change: "+$1,200 from last week",
     },
     {
+      // Keep this exact title so the frontend mobile view continues to detect it
       title: "Net Profit/Loss",
-      value:
-        totalProfitLoss >= 0
-          ? `+$${totalProfitLoss.toLocaleString()}`
-          : `-$${Math.abs(totalProfitLoss).toLocaleString()}`,
-      change: "+$320 from last week", // You can calculate this dynamically
+      value: formattedNetPL,
+      // No subtitle text below Net Profit/Loss
+      change: "",
     },
   ];
 };

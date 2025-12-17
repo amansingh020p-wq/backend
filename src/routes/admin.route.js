@@ -1,7 +1,18 @@
 import { Router } from "express";
 import { isAdmin, veriftyJWT } from "../middleware/auth.middleware.js";
+import { adminLimiter } from "../middleware/rateLimit.middleware.js";
+import { validateAdminParams } from "../middleware/validation.middleware.js";
 
 const router = Router();
+
+// Apply admin rate limiting to all admin routes
+router.use(adminLimiter);
+
+// Apply input validation to routes with ID parameters
+router.param('id', validateAdminParams);
+router.param('userId', validateAdminParams);
+router.param('tradeId', validateAdminParams);
+router.param('transactionId', validateAdminParams);
 
 // Import controllers
 import {

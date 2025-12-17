@@ -1,6 +1,8 @@
-import mongoose, {Schema} from "mongoose";
+import mongoose, { Schema } from "mongoose";
 import bcrypt from "bcrypt";
 import Jwt from "jsonwebtoken";
+import Transaction from "./transaction.model.js";
+import OrderHistory from "./orderhistory.model.js";
 
 const TransactionType = {
   WITHDRAW: 'WITHDRAW',
@@ -213,15 +215,16 @@ UserSchema.pre('save',async function (next){
 })
 
 
-UserSchema.statics.getUserBalances = async function(userId) {
-  const Transaction = mongoose.model('Transaction');
-  
-  // Convert userId to ObjectId if it's a string
-  const userIdObjectId = mongoose.Types.ObjectId.isValid(userId) 
-    ? (userId instanceof mongoose.Types.ObjectId ? userId : new mongoose.Types.ObjectId(userId))
+UserSchema.statics.getUserBalances = async function (userId) {
+  // Normalise userId to ObjectId
+  const userIdObjectId = mongoose.Types.ObjectId.isValid(userId)
+    ? userId instanceof mongoose.Types.ObjectId
+      ? userId
+      : new mongoose.Types.ObjectId(userId)
     : userId;
-  
-  const balanceData = await Transaction.aggregate([
+
+  // 1) Deposit / withdrawal aggregates
+  const balanceDataArr = await Transaction.aggregate([
     { $match: { userId: userIdObjectId } },
     {
       $group: {
@@ -229,62 +232,127 @@ UserSchema.statics.getUserBalances = async function(userId) {
         totalDeposits: {
           $sum: {
             $cond: [
-              { $and: [{ $eq: ['$type', 'DEPOSIT'] }, { $eq: ['$status', 'COMPLETED'] }] },
-              '$amount',
-              0
-            ]
-          }
+              {
+                $and: [
+                  { $eq: ["$type", "DEPOSIT"] },
+                  { $eq: ["$status", "COMPLETED"] },
+                ],
+              },
+              "$amount",
+              0,
+            ],
+          },
         },
         totalWithdrawals: {
           $sum: {
             $cond: [
-              { $and: [{ $eq: ['$type', 'WITHDRAWAL'] }, { $eq: ['$status', 'COMPLETED'] }] },
-              '$amount',
-              0
-            ]
-          }
+              {
+                $and: [
+                  { $eq: ["$type", "WITHDRAWAL"] },
+                  { $eq: ["$status", "COMPLETED"] },
+                ],
+              },
+              "$amount",
+              0,
+            ],
+          },
         },
         pendingDeposits: {
           $sum: {
             $cond: [
-              { $and: [{ $eq: ['$type', 'DEPOSIT'] }, { $eq: ['$status', 'PENDING'] }] },
-              '$amount',
-              0
-            ]
-          }
+              {
+                $and: [
+                  { $eq: ["$type", "DEPOSIT"] },
+                  { $eq: ["$status", "PENDING"] },
+                ],
+              },
+              "$amount",
+              0,
+            ],
+          },
         },
         pendingWithdrawals: {
           $sum: {
             $cond: [
-              { $and: [{ $eq: ['$type', 'WITHDRAWAL'] }, { $eq: ['$status', 'PENDING'] }] },
-              '$amount',
-              0
-            ]
-          }
-        }
-      }
-    }
+              {
+                $and: [
+                  { $eq: ["$type", "WITHDRAWAL"] },
+                  { $eq: ["$status", "PENDING"] },
+                ],
+              },
+              "$amount",
+              0,
+            ],
+          },
+        },
+      },
+    },
   ]);
 
-  const data = balanceData[0] || {
+  const tx = balanceDataArr[0] || {
     totalDeposits: 0,
     totalWithdrawals: 0,
     pendingDeposits: 0,
-    pendingWithdrawals: 0
+    pendingWithdrawals: 0,
   };
 
-  const totalBalance = data.totalDeposits - data.totalWithdrawals;
-  const availableBalance = totalBalance - data.pendingWithdrawals;
-  const pendingAmount = data.pendingDeposits + data.pendingWithdrawals;
+  // 2) Trading aggregates (open investment + realised P&L)
+  const tradeAggArr = await OrderHistory.aggregate([
+    { $match: { userId: userIdObjectId } },
+    {
+      $group: {
+        _id: null,
+        openInvestment: {
+          $sum: {
+            $cond: [
+              { $eq: ["$status", "OPEN"] },
+              { $ifNull: ["$tradeAmount", 0] },
+              0,
+            ],
+          },
+        },
+        realisedProfitLoss: {
+          $sum: {
+            $cond: [
+              { $eq: ["$status", "CLOSED"] },
+              { $ifNull: ["$profitLoss", 0] },
+              0,
+            ],
+          },
+        },
+      },
+    },
+  ]);
+
+  const trade = tradeAggArr[0] || {
+    openInvestment: 0,
+    realisedProfitLoss: 0,
+  };
+
+  // 3) Combine into trading-style balance
+  const baseBalance = tx.totalDeposits - tx.totalWithdrawals;
+  const accountBalance = baseBalance - trade.openInvestment + trade.realisedProfitLoss;
+
+  const totalBalance = baseBalance;
+  const availableBalance = accountBalance - tx.pendingWithdrawals;
+  const pendingAmount = tx.pendingDeposits + tx.pendingWithdrawals;
 
   return {
+    // Existing fields (backwards compatible)
     totalBalance,
     availableBalance,
     pendingAmount,
-    totalWithdrawn: data.totalWithdrawals,
-    totalDeposited: data.totalDeposits,
-    pendingDeposits: data.pendingDeposits,
-    pendingWithdrawals: data.pendingWithdrawals
+    totalWithdrawn: tx.totalWithdrawals,
+    totalDeposited: tx.totalDeposits,
+    pendingDeposits: tx.pendingDeposits,
+    pendingWithdrawals: tx.pendingWithdrawals,
+
+    // New trading-aware wallet fields
+    accountBalance,
+    totalDeposit: tx.totalDeposits,
+    totalWithdrawals: tx.totalWithdrawals,
+    orderInvestment: trade.openInvestment,
+    profitLoss: trade.realisedProfitLoss,
   };
 };
 

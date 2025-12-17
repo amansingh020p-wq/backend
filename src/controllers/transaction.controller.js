@@ -478,10 +478,13 @@ const withdrawHistory = asyncHandler(async (req, res) => {
 const depositDetails = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   try {
-    const totalSummary = await user.getUserBalances(userId)
-    if(!totalSummary){
+    const totalSummary = await User.getUserBalances(userId);
+    if (!totalSummary) {
       throw new ApiError(404, "User not found or no transactions available");
     }
+    return res.status(200).json(
+      new ApiResponse(200, totalSummary, "Deposit details retrieved successfully")
+    );
   } catch (error) {
     throw new ApiError(500, "Failed to retrieve deposit details");
   }
@@ -494,38 +497,8 @@ const withdrawDetails = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
   try {
-    // Method 1: If you have getUserBalances method
-    const totalSummary = await user.getUserBalances(userId);
-    
-    if (!totalSummary) {
-      // Method 2: Calculate manually if getUserBalances doesn't exist
-      const deposits = await Transaction.aggregate([
-        { $match: { userId: new mongoose.Types.ObjectId(userId), type: 'DEPOSIT', status: 'COMPLETED' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]);
-
-      const withdrawals = await Transaction.aggregate([
-        { $match: { userId: new mongoose.Types.ObjectId(userId), type: 'WITHDRAWAL', status: 'COMPLETED' } },
-        { $group: { _id: null, total: { $sum: '$amount' } } }
-      ]);
-
-      const totalDeposit = deposits[0]?.total || 0;
-      const totalWithdrawals = withdrawals[0]?.total || 0;
-      const accountBalance = totalDeposit - totalWithdrawals;
-
-      const summary = {
-        accountBalance,
-        totalDeposit,
-        totalWithdrawals,
-        orderInvestment: 0, // You might need to calculate this based on your business logic
-        profitLoss: 0 // You might need to calculate this based on your business logic
-      };
-
-      return res.status(200).json(
-        new ApiResponse(200, summary, "Withdrawal details retrieved successfully")
-      );
-    }
-
+    // Use shared balance helper on User model
+    const totalSummary = await User.getUserBalances(userId);
     return res.status(200).json(
       new ApiResponse(200, totalSummary, "Withdrawal details retrieved successfully")
     );
@@ -543,7 +516,7 @@ const withdrawDetails = asyncHandler(async (req, res) => {
 const getTransactionSummary = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  const detail = await user.getUserBalances(userId);
+  const detail = await User.getUserBalances(userId);
 
   return res.status(200).json(
     new ApiResponse(200, detail, "Transaction summary retrieved successfully")
