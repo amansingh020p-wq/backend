@@ -677,6 +677,7 @@ const login = async (req, res) => {
         status: "success",
         message: "login success",
         data: {
+          accessToken,
           role: user.role,
           isVerified: user.isVerified,
           email: user.email,
